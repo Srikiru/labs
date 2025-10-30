@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Security Panel Demo — CSP / Mixed Content / TLS</title>
+
+  <!-- START: By default we don't set strict CSP so you can demonstrate vulnerable behaviour.
+       We'll add/change CSP dynamically from the page to demo blocking. -->
+  <meta id="csp-meta" http-equiv="Content-Security-Policy" content="">
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 28px; background:#f4f6f8; color:#222;}
+    .card { background:#fff; border-radius:12px; box-shadow:0 6px 18px rgba(0,0,0,0.06); padding:20px; max-width:820px; }
+    h1 { margin:0 0 8px; font-size:20px;}
+    p.lead { color:#444; margin-top:0; margin-bottom:12px; }
+    .btn { padding:10px 12px; margin:6px; border-radius:8px; border:0; cursor:pointer; }
+    .btn.primary { background:#0b63d6; color:white; }
+    .btn.warn { background:#f59e0b; color:white; }
+    .btn.ghost { background:#e6eefc; color:#0b63d6; }
+    #output { margin-top:14px; font-family:monospace; white-space:pre-wrap; color:#111; background:#f8fafc; padding:10px; border-radius:8px; border:1px solid #e6eefc; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Security Panel Demo — CSP, Mixed Content & TLS Issues</h1>
+    <p class="lead">Use the buttons to simulate insecure inclusions, then open <strong>DevTools → Security / Console / Network</strong> to inspect what happens.</p>
+
+    <div class="row">
+      <button class="btn primary" id="btn-load-http-script">Load insecure HTTP script</button>
+      <button class="btn primary" id="btn-load-http-image">Load insecure HTTP image</button>
+      <button class="btn warn" id="btn-inject-inline-js">Inject inline JS (eval / inline script)</button>
+      <button class="btn ghost" id="btn-set-lax-csp">Set Lax CSP (allow inline)</button>
+      <button class="btn primary" id="btn-set-strict-csp">Set Strict CSP (no inline, no http)</button>
+      <button class="btn" id="btn-clear-csp">Clear CSP (default / vulnerable)</button>
+    </div>
+
+    <p style="margin-top:12px;">
+      Notes: Mixed-content loads (http resources on an https page) are often blocked by browsers. TLS problems (invalid certs) produce errors in the Security panel — to demo TLS issues run the file from a server with a self-signed cert or use a site with a bad cert on your lab network.
+    </p>
+
+    <div id="test-area" style="margin-top:10px; padding:10px; border-radius:8px; border:1px dashed #dbeafe;">
+      <strong>Test area</strong>
+      <div id="dynamic-content" style="margin-top:8px;"></div>
+    </div>
+
+    <div id="output"></div>
+  </div>
+
+  <script>
+    const output = document.getElementById('output');
+    function log(msg) {
+      const t = new Date().toISOString().split('T')[1].replace('Z','');
+      output.textContent += `[${t}] ${msg}\n`;
+      output.scrollTop = output.scrollHeight;
+      console.log(msg);
+    }
+
+    // Placeholder "insecure" hosts (these are examples; the browser will attempt to load them)
+    const INSECURE_SCRIPT = 'http://example.com/insecure-script.js'; // will be treated as mixed content if page served over HTTPS
+    const INSECURE_IMAGE  = 'http://example.com/insecure-image.jpg';
+
+    function appendScript(src, options = {}) {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = false;
+      if (options.nonce) s.nonce = options.nonce;
+      s.onload = () => log(`script loaded: ${src}`);
+      s.onerror = () => log(`script error (likely blocked by browser/CSP/mixed-content): ${src}`);
+      document.getElementById('dynamic-content').appendChild(s);
+    }
+
+    function appendImage(src) {
+      const img = document.createElement('img');
+      img.src = src;
+      img.width = 180;
+      img.onload = () => log(`image loaded: ${src}`);
+      img.onerror = () => log(`image load failed (likely blocked): ${src}`);
+      document.getElementById('dynamic-content').appendChild(img);
+    }
+
+    document.getElementById('btn-load-http-script').onclick = () => {
+      log('Attempting to load insecure HTTP script (mixed content demo). Check Security panel & Console.');
+      appendScript(INSECURE_SCRIPT);
+    };
+
+    document.getElementById('btn-load-http-image').onclick = () => {
+      log('Attempting to load insecure HTTP image (mixed content demo). Check Security panel & Console.');
+      appendImage(INSECURE_IMAGE);
+    };
+
+    document.getElementById('btn-inject-inline-js').onclick = () => {
+      log('Attempting inline eval-injection: executing eval("console.log(\'eval ran\')"). Check CSP blocking if strict.');
+      try {
+        eval("console.log('eval ran — potential XSS / unsafe-inline demo');");
+        log('eval executed (if CSP allows inline/eval).');
+      } catch (e) {
+        log('eval blocked by CSP or browser policy: ' + e.message);
+      }
+    };
+
+    // CSP helpers - set meta tag dynamically (works for resources loaded AFTER the meta append)
+    function setCSP(content) {
+      const meta = document.getElementById('csp-meta');
+      meta.setAttribute('content', content || '');
+      log('CSP set to: ' + (content || '(empty - no CSP)'));
+      // Note: CSP applies to subsequent resource loads; to show blocking, click load buttons after setting CSP.
+    }
+
+    document.getElementById('btn-set-lax-csp').onclick = () => {
+      // Lax: allows http (for demo we intentionally include http: to show weaker policy)
+      setCSP("default-src 'self' http: https: 'unsafe-inline' 'unsafe-eval'; img-src http: https: data:; upgrade-insecure-requests 0");
+      log('Lax CSP applied (unsafe-inline allowed). Try inline eval or load HTTP resources.');
+    };
+
+    document.getElementById('btn-set-strict-csp').onclick = () => {
+      // Strict CSP: no inline, no mixed content; upgrade-insecure-requests & block-all-mixed-content are strong policies.
+      // block-all-mixed-content prevents loading insecure subresources on HTTPS pages.
+      setCSP("default-src 'self' https:; script-src 'self'; object-src 'none'; img-src 'self' data:; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content; report-to /csp-report-endpoint");
+      log('Strict CSP applied. Now try loading insecure HTTP resources or injecting inline JS — they should be blocked.');
+    };
+
+    document.getElementById('btn-clear-csp').onclick = () => {
+      setCSP('');
+      log('CSP cleared — browser will rely on defaults (likely more permissive).');
+    };
+
+    // Clear dynamic content on navigation (simple cleanup demo)
+    window.addEventListener('beforeunload', () => {
+      // In real apps, you must clear references and cleanup to avoid memory or data retention issues.
+      document.getElementById('dynamic-content').innerHTML = '';
+    });
+
+    log('Demo ready — open DevTools > Security / Console / Network. For TLS demo: serve this page over HTTPS using a self-signed cert to show cert errors in Security panel.');
+  </script>
+</body>
+</html>
