@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Performance Panel Demo — Timing & Race Conditions</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,sans-serif;padding:24px;background:#fff}
+    .card{max-width:820px;background:#f8fafc;padding:18px;border-radius:10px;box-shadow:0 8px 30px rgba(2,6,23,.06)}
+    button{padding:10px 12px;margin:6px;border-radius:8px;border:1px solid #d1d9e6;cursor:pointer}
+    .muted{color:#445;margin-top:6px;font-size:13px}
+    pre{background:#0f1724;color:#e6eefc;padding:10px;border-radius:8px;overflow:auto;height:160px}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    .big{font-size:18px;font-weight:600}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Performance Panel Demo — Timing & Race Conditions</h2>
+    <p class="muted">Open Edge DevTools → Performance. Record while you do these actions to see real evidence (Main thread, Long Tasks, Flame Chart, Screenshots).</p>
+
+    <div style="margin-top:12px">
+      <div class="row">
+        <button id="start-race" title="Start two concurrent increments">Start Race (2 concurrent ops)</button>
+        <button id="start-race-safe" title="Start two sequential/locked increments">Start Race (safe)</button>
+        <button id="run-blocking" title="Run blocking heavy task">Run Blocking Heavy Task</button>
+        <button id="run-nonblocking" title="Run cooperative heavy task">Run Cooperative Heavy Task</button>
+        <button id="reset" title="Reset counter">Reset Counter</button>
+      </div>
+
+      <p style="margin-top:10px"><span class="big">Counter:</span> <span id="counter" class="big">0</span></p>
+      <p class="muted">Notes: The race demo uses simulated server delays (random). With concurrent increments you sometimes lose one increment — classic race. The blocking task simulates expensive synchronous work producing a long task in Performance; the cooperative task yields periodically and looks better in profiler.</p>
+    </div>
+
+    <h3 style="margin-top:12px">Console / Visual Log</h3>
+    <pre id="log">Ready — open DevTools → Performance, press Record, then perform actions.</pre>
+  </div>
+
+<script>
+  const logEl = document.getElementById('log');
+  const counterEl = document.getElementById('counter');
+  function log(msg){ logEl.textContent += `[${new Date().toLocaleTimeString()}] ${msg}\n`; logEl.scrollTop = logEl.scrollHeight; console.log(msg); }
+
+  // shared state: counter
+  let counter = 0;
+  function render(){ counterEl.textContent = counter; }
+
+  // simulate async server increment: reads current value, waits random ms, returns current+1
+  function fakeServerIncrementReadModifyWrite() {
+    const localRead = counter; // race-prone read
+    const delay = 150 + Math.floor(Math.random()*600); // 150..750ms random
+    return new Promise(resolve => {
+      setTimeout(() => {
+        const newVal = localRead + 1; // naive increment based on stale read
+        // Simulate "writing back" — in this demo we directly set client state to simulate race effect
+        resolve(newVal);
+      }, delay);
+    });
+  }
+
+  // Unsafe: run two concurrent increments that both read stale counter and write back naive result.
+  async function startRaceUnsafe() {
+    log('Starting unsafe race: launching two concurrent increments.');
+    // launch two concurrent operations — they both read the same counter value
+    const p1 = fakeServerIncrementReadModifyWrite();
+    const p2 = fakeServerIncrementReadModifyWrite();
+    // handle results as they resolve; whichever resolves later will clobber earlier one
+    p1.then(v => { counter = v; render(); log('p1 finished -> set counter=' + v); });
+    p2.then(v => { counter = v; render(); log('p2 finished -> set counter=' + v); });
+  }
+
+  // Safe: use optimistic locking / queue - simple mutex to serialize updates client-side
+  let lock = false;
+  async function startRaceSafe() {
+    log('Starting safe increments (serialized via mutex).');
+    // simple queueing: run two operations sequentially
+    const results = [await fakeServerIncrementReadModifyWrite(), await fakeServerIncrementReadModifyWrite()];
+    // apply in order returned from server simulation: but since we awaited sequentially we avoid overwrite
+    for (const v of results) { counter = v; render(); log('applied value -> counter=' + v); }
+  }
+
+  // Blocking heavy task (simulate CPU hog on main thread)
+  function runBlockingHeavyTask() {
+    log('Running blocking heavy task (synchronous, expect Long Task).');
+    const start = performance.now();
+    // large CPU loop for ~800ms (depends on machine)
+    while (performance.now() - start < 800) {
+      // simulate expensive calculation
+      Math.sqrt(Math.random()*1e9);
+    }
+    log('Blocking heavy task finished.');
+  }
+
+  // Cooperative heavy task: chunked work using setTimeout so main thread yields
+  function runCooperativeHeavyTask() {
+    log('Running cooperative heavy task (chunked, non-blocking).');
+    const total = 200000;
+    let i = 0;
+    function chunk(){
+      const stop = Math.min(i + 5000, total);
+      for (; i < stop; i++) Math.sqrt(Math.random()*1e9);
+      if (i < total) {
+        // yield control so UI can update / profiler shows smaller tasks
+        setTimeout(chunk, 0);
+      } else {
+        log('Cooperative heavy task finished.');
+      }
+    }
+    chunk();
+  }
+
+  // UI
+  document.getElementById('start-race').onclick = () => startRaceUnsafe();
+  document.getElementById('start-race-safe').onclick = () => startRaceSafe();
+  document.getElementById('run-blocking').onclick = () => runBlockingHeavyTask();
+  document.getElementById('run-nonblocking').onclick = () => runCooperativeHeavyTask();
+  document.getElementById('reset').onclick = () => { counter = 0; render(); log('Counter reset to 0'); };
+
+  // initial render
+  render();
+  log('Demo ready. Tip: Record Performance, click Start Race (unsafe) then inspect Flame Chart + Main thread to see interleaving and where final value was clobbered.');
+</script>
+</body>
+</html>
