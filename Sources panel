@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Sources Panel Demo — Snippets / Blackboxing / Conditional Breakpoints</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,sans-serif;padding:24px;background:#f7fbff}
+    .card{background:#fff;padding:18px;border-radius:10px;box-shadow:0 6px 18px rgba(2,6,23,.06);max-width:760px}
+    input,button{padding:10px;margin:6px;border-radius:6px;border:1px solid #d1d9e6}
+    .note{font-size:13px;color:#444;margin-top:6px}
+    pre{background:#f1f5f9;padding:8px;border-radius:6px;overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Sources Panel Demo</h2>
+    <p class="note">Use DevTools → Sources. We'll demonstrate: <strong>Snippets</strong> to run quick code, <strong>Blackboxing</strong> to skip noisy libs while stepping, and <strong>Conditional Breakpoints</strong> to stop only when an exploit condition occurs.</p>
+
+    <label>Username: <input id="user" value="alice"></label><br/>
+    <label>Password: <input id="pass" value="hunter2" type="password"></label><br/>
+    <button id="login">Login (simulate)</button>
+    <button id="simulate-lib">Run 3rd-party lib action</button>
+
+    <div style="margin-top:12px">
+      <strong>Console log area (visual):</strong>
+      <pre id="out"></pre>
+    </div>
+
+    <p class="note">Notes: <em>thirdparty.js</em> is emulated below as a noisy library that logs sensitive data. We'll blackbox it so stepping doesn't go into it. Use conditional breakpoints on line that sends credentials to show how you'd catch exfiltration only when password length &gt; 0.</em></p>
+  </div>
+
+  <script>
+    // === emulated third-party library (noisy, frequent calls) ===
+    // In real life this is a minified vendor file you can't control.
+    function thirdPartyTrack(event, data) {
+      // noisy internals
+      for (let i=0;i<3;i++){
+        console.debug('[3rd-party] debug tick', i, event, data && data.slice ? data.slice(0,6) : data);
+      }
+      // BAD: accidentally logs sensitive data
+      if (data && data.password) {
+        console.log('[3rd-party] SENSITIVE LOG:', JSON.stringify(data)); // vulnerable behavior we want to catch
+      }
+      return true;
+    }
+
+    // === application code (your code) ===
+    function sendLogin(username, password) {
+      // Line of interest: we call a vendor lib and also send to server (simulated)
+      const payload = { username, password };
+      thirdPartyTrack('login_attempt', password); // <--- put conditional breakpoint here
+      // Simulate network send
+      fakeNetworkSend('/api/login', payload);
+    }
+
+    function fakeNetworkSend(url, payload) {
+      console.info('NETWORK SEND', url, JSON.stringify(payload));
+      const out = document.getElementById('out');
+      out.textContent += `[${new Date().toLocaleTimeString()}] SENT -> ${url} ${JSON.stringify(payload)}\n`;
+    }
+
+    // UI hooks
+    document.getElementById('login').onclick = () => {
+      const u = document.getElementById('user').value;
+      const p = document.getElementById('pass').value;
+      sendLogin(u,p);
+    };
+
+    // simulate periodic library noise (so stepping is noisy)
+    document.getElementById('simulate-lib').onclick = () => {
+      for (let j=0;j<5;j++){
+        thirdPartyTrack('tick'+j, {info:'heartbeat'});
+      }
+    };
+
+    // Expose helper for snippets (so you can call from DevTools Snippets)
+    window.__DEV_HELPERS = {
+      dumpMemory: function() {
+        // Example snippet: inspect DOM inputs & return object
+        return {
+          user: document.getElementById('user').value,
+          pass: document.getElementById('pass').value,
+          cookies: document.cookie
+        };
+      },
+      clearConsoleArea: function() { document.getElementById('out').textContent = ''; }
+    };
+
+    console.log('Demo ready — open DevTools → Sources. Put a conditional breakpoint on the thirdPartyTrack call inside sendLogin, blackbox "thirdPartyTrack" or the file, and create a Snippet that runs window.__DEV_HELPERS.dumpMemory().');
+  </script>
+</body>
+</html>
