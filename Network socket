@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<body>
+<h3>WebSocket Demo</h3>
+<button onclick="sendMsg()">Send Message</button>
+
+<script>
+let socket = new WebSocket("wss://echo.websocket.org"); // public echo server
+
+socket.onopen = () => console.log("Connected to WebSocket");
+socket.onmessage = e => console.log("Received:", e.data);
+socket.onerror = e => console.log("Error:", e);
+
+function sendMsg() {
+  socket.send("Hello WebSocket!");
+}
+</script>
+</body>
+</html>
