@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lighthouse Demo — Automated Audit Traps</title>
+
+  <!-- Intentionally weak: inline style (will show unsafe-inline usage / style-in-body issues for best practices) -->
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: #fff8f0; padding: 24px; color: #111; }
+    .card { background: #fff; padding: 16px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,0.06); max-width: 820px; }
+    button { padding:8px 10px; margin:6px; border-radius:6px; border:1px solid #ddd; cursor:pointer;}
+    pre { background:#000; color:#fff; padding:10px; border-radius:6px; height:160px; overflow:auto; }
+  </style>
+
+  <!-- NOTE: we intentionally do NOT include a Content-Security-Policy header here.
+       When you run Lighthouse, it will flag missing security headers as Best Practice issues. -->
+
+</head>
+<body>
+  <div class="card">
+    <h1>Lighthouse Demo — Automated Audit Traps</h1>
+    <p>This page intentionally contains issues Lighthouse flags: mixed-content resources, inline scripts/styles, heavy JS, unoptimized image, and missing security headers.</p>
+
+    <div>
+      <strong>Bad resources included (on purpose)</strong>
+      <ul>
+        <li>HTTP image (mixed content if served over HTTPS)</li>
+        <li>Inline script + eval usage (unsafe-inline / unsafe-eval problems)</li>
+        <li>Large synchronous work on page load (creates long tasks)</li>
+        <li>No CSP / no HSTS headers</li>
+        <li>Unoptimized image (large file simulated)</li>
+      </ul>
+    </div>
+
+    <div style="margin-top:12px;">
+      <button id="do-heavy">Simulate heavy CPU (on-demand)</button>
+      <button id="log-event">Log event (simulate analytics)</button>
+      <button id="make-fetch">Make cross-origin fetch (HTTP / insecure)</button>
+    </div>
+
+    <h3 style="margin-top:12px">Console / Visual Log</h3>
+    <pre id="log">Ready — follow the KT script: open Edge DevTools → Lighthouse → run a full audit (Performance + Best Practices).</pre>
+  </div>
+
+  <!-- Intentionally included "insecure" references -->
+  <!-- Mixed-content image (will be blocked or flagged when served on HTTPS) -->
+  <img id="bad-img" src="http://example.com/large-image.jpg" alt="insecure image" style="display:none"/>
+
+  <!-- Old-style inline script + eval (Lighthouse will highlight inline/Eval related issues in Best Practices) -->
+  <script>
+    // inline script (weak practice) and uses eval on demand to show unsafe-eval behavior
+    function doEvalThing(){
+      try {
+        eval("console.log('eval executed - unsafe')"); // intentional unsafe-eval
+        log('[inline] eval executed');
+      } catch(e) {
+        log('[inline] eval blocked: ' + e.message);
+      }
+    }
+
+    // simulate a heavy sync task on demand to create a Long Task in the trace
+    function heavySyncWork(milliseconds = 700){
+      const start = performance.now();
+      while (performance.now() - start < milliseconds) {
+        // waste CPU
+        Math.sqrt(Math.random()*1e9);
+      }
+      log('heavySyncWork finished ('+milliseconds+'ms)');
+    }
+
+    // simulate an analytics call (no CSP / unsafe usage)
+    function fakeAnalytics(){
+      console.log('[analytics] page view', {ts: Date.now()});
+      log('fakeAnalytics called - console trace logged');
+    }
+
+    // insecure cross-origin HTTP fetch to show mixed-content / insecure resource attempts (may be blocked on HTTPS)
+    function insecureFetch(){
+      fetch('http://example.com/api/unsafe')
+        .then(r => log('fetched insecure resource (http) - result status: ' + (r.status || 'unknown')))
+        .catch(e => log('insecure fetch error: ' + e.message));
+    }
+
+    // utility log
+    function log(m){ const p = document.getElementById('log'); p.textContent += '['+new Date().toLocaleTimeString()+'] '+m+'\n'; console.log(m); }
+
+    document.getElementById('do-heavy').addEventListener('click', () => heavySyncWork(800));
+    document.getElementById('log-event').addEventListener('click', () => { fakeAnalytics(); doEvalThing(); });
+    document.getElementById('make-fetch').addEventListener('click', () => insecureFetch());
+
+    // create some large inline JS payload to mimic heavy bundle (unused code)
+    (function createBloat(){
+      // a big unused array to simulate payload weight (Lighthouse flags unused JS and large bundles)
+      const unused = new Array(50000).fill('xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+      window.__L_HOUSEKEEPING = { unusedSizeSample: unused.length };
+    })();
+
+    log('Demo ready. When you run Lighthouse, expect warnings for performance (unused JS), best-practices (no security headers, inline eval), mixed content (http resource), and long tasks if you click "Simulate heavy CPU".');
+  </script>
+</body>
+</html>
