@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Browser Pentest PoC — Demo Page</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;margin:16px}</style>
+</head>
+<body>
+  <h1>Browser Pentest PoC — Demo Page</h1>
+
+  <h3>1) Hidden price form (Elements demo)</h3>
+  <form id="order" action="/submit" method="POST">
+    <input type="hidden" name="itemId" value="A1001">
+    <input type="hidden" name="price" id="price" value="1000">
+    <span id="price-show">₹1000</span>
+    <button type="submit">Pay (form POST)</button>
+  </form>
+
+  <h3>2) Fetch checkout (Network demo)</h3>
+  <div>
+    Price: <input id="fetch-price" value="1000">
+    <button id="doFetch">Pay (fetch)</button>
+  </div>
+
+  <h3>3) Login & token storage (Application demo)</h3>
+  <div>
+    <button id="doLogin">Login (get token cookie & response)</button>
+    <pre id="login-res"></pre>
+  </div>
+
+  <h3>4) Role change (Network tamper demo)</h3>
+  <div>
+    <input id="new-role" value="admin"><button id="setRole">Set Role (PUT /api/setrole)</button>
+    <pre id="role-res"></pre>
+  </div>
+
+  <h3>5) Console & Sources</h3>
+  <p>Open Console for overrides. <a href="/app.min.js" target="_blank">app.min.js (open for Sources demo)</a></p>
+
+  <hr>
+  <script src="/app.js"></script>
+</body>
+</html>
