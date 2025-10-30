@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Performance Security Demo — Timing & Race Condition (Exploit vs Fix)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: "Segoe UI", Roboto, Arial; background:#f7f9fb; color:#222; padding:28px; }
+    .card { background:white; border-radius:10px; box-shadow:0 6px 18px rgba(12,30,50,0.06); padding:20px; max-width:880px; margin:auto; }
+    h1 { margin:0 0 8px 0; font-size:20px; }
+    .controls { display:flex; gap:10px; flex-wrap:wrap; margin-top:12px; }
+    button { padding:10px 14px; border-radius:8px; border:none; cursor:pointer; background:#0069ff; color:white; font-weight:600; }
+    button.secondary { background:#6c757d; }
+    button.warn { background:#d9534f; }
+    .panel { display:flex; gap:16px; margin-top:16px; }
+    .box { flex:1; padding:12px; border-radius:8px; background:#f1f6fb; min-height:140px; }
+    pre { white-space:pre-wrap; font-size:13px; }
+    .status { font-weight:700; font-size:16px; margin-top:6px; }
+    .muted { color:#556; font-size:13px; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Performance Security Demo — Race Condition (Exploit vs Fix)</h1>
+    <div class="muted">Simulated server. Balance starts at <code>100</code>. Withdraw amount defaults to <code>60</code>.</div>
+
+    <div class="controls">
+      <button id="attackBtn">Attack — send 5 concurrent withdraws</button>
+      <button id="singleBtn">Send 2 concurrent withdraws</button>
+      <button id="safeAttackBtn" class="secondary">Attack (Fixed server) — 5 concurrent</button>
+      <button id="toggleDelay" class="secondary">Toggle processing delay (slow)</button>
+      <button id="resetBtn" class="warn">Reset</button>
+    </div>
+
+    <div class="panel">
+      <div class="box">
+        <div class="status">Server state</div>
+        <div id="balance">Balance: <strong>100</strong></div>
+        <div class="muted" id="locks">Lock: unlocked</div>
+        <div style="margin-top:10px;"><small>Server log (chronological):</small></div>
+        <pre id="serverLog"></pre>
+      </div>
+
+      <div class="box">
+        <div class="status">Client / Demo Controls</div>
+        <div class="muted">Use <strong>Performance → Record</strong> to capture timeline and observe overlapping callbacks and marks.</div>
+        <div style="margin-top:10px;"><small>Client log:</small></div>
+        <pre id="clientLog"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /******************************************************************
+     * Simulated server with insecure (racy) withdrawal and a fixed one
+     * - balance: numeric
+     * - insecureWithdraw: check -> delay -> update (vulnerable)
+     * - safeWithdraw: same but uses async mutex (prevents race)
+     ******************************************************************/
+    (function(){
+      // Server state
+      const server = {
+        balance: 100,
+        slowProcessing: true, // toggle to increase delay and make race easier to observe
+      };
+
+      // client log helper
+      function clog(msg) {
+        const el = document.getElementById('clientLog');
+        const t = new Date().toISOString().split('T')[1].slice(0,12);
+        el.textContent += `[${t}] ${msg}\n`;
+        el.scrollTop = el.scrollHeight;
+        console.log('[CLIENT]', msg);
+      }
+
+      // server log helper
+      function slog(msg) {
+        const el = document.getElementById('serverLog');
+        const t = new Date().toISOString().split('T')[1].slice(0,12);
+        el.textContent += `[${t}] ${msg}\n`;
+        el.scrollTop = el.scrollHeight;
+        console.log('[SERVER]', msg);
+        updateUI();
+      }
+
+      function updateUI() {
+        document.getElementById('balance').innerHTML = `Balance: <strong>${server.balance}</strong>`;
+      }
+
+      // simple processing delay (simulates network + DB time)
+      function processingDelay() {
+        const base = server.slowProcessing ? 600 : 150; // ms
+        // add random jitter
+        const jitter = Math.floor(Math.random() * 300);
+        const ms = base + jitter;
+        return new Promise(resolve => setTimeout(resolve, ms));
+      }
+
+      // ---------------- Insecure withdraw (vulnerable to race) ----------------
+      // check -> delay -> update  (non-atomic)
+      async function insecureWithdraw(amount, requestId) {
+        performance.mark(`server-insecure-start-${requestId}`);
+        slog(`(insecure) request ${requestId}: received; checking balance...`);
+        // check
+        const snapshot = server.balance;
+        slog(`(insecure) request ${requestId}: balance snapshot = ${snapshot}`);
+        // simulate expensive processing (DB, external systems)
+        await processingDelay();
+        // after delay, perform update using the earlier snapshot check
+        if (snapshot >= amount) {
+          server.balance = server.balance - amount;
+          slog(`(insecure) request ${requestId}: approved — withdrew ${amount}. New balance=${server.balance}`);
+        } else {
+          slog(`(insecure) request ${requestId}: denied — insufficient funds (snapshot=${snapshot})`);
+        }
+        performance.mark(`server-insecure-end-${requestId}`);
+        performance.measure(`server-insecure-${requestId}`, `server-insecure-start-${requestId}`, `server-insecure-end-${requestId}`);
+        return { success: snapshot >= amount, balance: server.balance };
+      }
+
+      // ---------------- Safe withdraw (uses a simple async mutex) ----------------
+      // Implement a tiny async mutex (queue)
+      class AsyncMutex {
+        constructor(){ this._q = Promise.resolve(); this._locked = false; }
+        lock() {
+          let unlockNext;
+          const p = new Promise(resolve => unlockNext = resolve);
+          const willLock = this._q.then(() => {
+            this._locked = true;
+            return () => { this._locked = false; unlockNext(); };
+          });
+          this._q = this._q.then(() => p);
+          return willLock;
+        }
+        isLocked(){ return this._locked; }
+      }
+
+      const mutex = new AsyncMutex();
+
+      async function safeWithdraw(amount, requestId) {
+        performance.mark(`server-safe-waitlock-${requestId}`);
+        slog(`(safe) request ${requestId}: waiting for lock...`);
+        const unlock = await mutex.lock(); // obtain lock
+        performance.mark(`server-safe-locked-${requestId}`);
+        document.getElementById('locks').textContent = 'Lock: locked';
+        try {
+          slog(`(safe) request ${requestId}: lock obtained. checking balance...`);
+          const snapshot = server.balance;
+          slog(`(safe) request ${requestId}: balance snapshot = ${snapshot}`);
+          await processingDelay();
+          if (server.balance >= amount) { // check again under lock
+            server.balance = server.balance - amount;
+            slog(`(safe) request ${requestId}: approved — withdrew ${amount}. New balance=${server.balance}`);
+          } else {
+            slog(`(safe) request ${requestId}: denied — insufficient funds (live=${server.balance})`);
+          }
+          return { success: server.balance >= 0, balance: server.balance };
+        } finally {
+          document.getElementById('locks').textContent = 'Lock: unlocked';
+          unlock(); // release lock
+          performance.mark(`server-safe-unlocked-${requestId}`);
+          performance.measure(`server-safe-${requestId}`, `server-safe-locked-${requestId}`, `server-safe-unlocked-${requestId}`);
+        }
+      }
+
+      // ---------------- Client-side triggers ----------------
+      let nextReqId = 1;
+      function spawnInsecureWithdraw(amount) {
+        const id = nextReqId++;
+        performance.mark(`client-insecure-send-${id}`);
+        clog(`sending insecure withdraw request ${id} (amt=${amount})`);
+        insecureWithdraw(amount, id).then(res => {
+          performance.mark(`client-insecure-recv-${id}`);
+          performance.measure(`client-insecure-${id}`, `client-insecure-send-${id}`, `client-insecure-recv-${id}`);
+          clog(`insecure request ${id} done — success=${res.success} — balance=${res.balance}`);
+        });
+      }
+
+      function spawnSafeWithdraw(amount) {
+        const id = nextReqId++;
+        performance.mark(`client-safe-send-${id}`);
+        clog(`sending safe-withdraw request ${id} (amt=${amount})`);
+        safeWithdraw(amount, id).then(res => {
+          performance.mark(`client-safe-recv-${id}`);
+          performance.measure(`client-safe-${id}`, `client-safe-send-${id}`, `client-safe-recv-${id}`);
+          clog(`safe request ${id} done — balance=${res.balance}`);
+        });
+      }
+
+      // UI wiring
+      document.getElementById('attackBtn').addEventListener('click', () => {
+        // send 5 concurrent insecure withdraws -> exploit race
+        document.getElementById('clientLog').textContent = '';
+        document.getElementById('serverLog').textContent = '';
+        for (let i=0;i<5;i++) spawnInsecureWithdraw(60);
+      });
+
+      document.getElementById('singleBtn').addEventListener('click', () => {
+        document.getElementById('clientLog').textContent = '';
+        document.getElementById('serverLog').textContent = '';
+        spawnInsecureWithdraw(60);
+        spawnInsecureWithdraw(60);
+      });
+
+      document.getElementById('safeAttackBtn').addEventListener('click', () => {
+        document.getElementById('clientLog').textContent = '';
+        document.getElementById('serverLog').textContent = '';
+        for (let i=0;i<5;i++) spawnSafeWithdraw(60);
+      });
+
+      document.getElementById('toggleDelay').addEventListener('click', () => {
+        server.slowProcessing = !server.slowProcessing;
+        slog(`processingDelay is now ${server.slowProcessing ? 'SLOW' : 'FAST'}`);
+      });
+
+      document.getElementById('resetBtn').addEventListener('click', () => {
+        server.balance = 100;
+        document.getElementById('clientLog').textContent = '';
+        document.getElementById('serverLog').textContent = '';
+        document.getElementById('locks').textContent = 'Lock: unlocked';
+        slog('Server reset: balance=100');
+      });
+
+      // initial UI
+      updateUI();
+      slog('Server ready: balance=100');
+
+      // Expose for experiments
+      window._demoServer = { insecureWithdraw, safeWithdraw, server, processingDelay, mutex };
+    })();
+  </script>
+</body>
+</html>
